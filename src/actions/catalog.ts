@@ -98,6 +98,29 @@ export async function updateGame(id: string, formData: Partial<z.infer<typeof ga
   return { success: true, game: updated };
 }
 
+export async function deleteGame(id: string) {
+  const user = await requireRole(["admin", "super_admin"]);
+
+  const [before] = await db.select().from(schema.games).where(eq(schema.games.id, id)).limit(1);
+
+  await db.delete(schema.games).where(eq(schema.games.id, id));
+
+  await writeAuditLog({
+    actorId: user.userId,
+    actorRole: user.role,
+    action: "DELETE",
+    entityType: "game",
+    entityId: id,
+    referenceCode: before?.slug || id,
+    beforeData: before || null,
+  });
+
+  revalidatePath("/admin/games");
+  revalidatePath("/top-up");
+  revalidatePath("/");
+  return { success: true };
+}
+
 // ============ PRODUCT SCHEMAS & ACTIONS ============
 const productSchema = z.object({
   gameId: z.string().uuid(),
@@ -222,6 +245,27 @@ export async function updateProduct(id: string, formData: Partial<z.infer<typeof
   return { success: true, product: updated };
 }
 
+export async function deleteProduct(id: string) {
+  const user = await requireRole(["admin", "super_admin"]);
+
+  const [before] = await db.select().from(schema.products).where(eq(schema.products.id, id)).limit(1);
+
+  await db.delete(schema.products).where(eq(schema.products.id, id));
+
+  await writeAuditLog({
+    actorId: user.userId,
+    actorRole: user.role,
+    action: "DELETE",
+    entityType: "product",
+    entityId: id,
+    referenceCode: before?.sku || id,
+    beforeData: before || null,
+  });
+
+  revalidatePath("/admin/products");
+  return { success: true };
+}
+
 // ============ VOUCHER SCHEMAS & ACTIONS ============
 export async function validateVoucher(code: string, subtotal: number, scope: "TOPUP" | "JOKI" | "ALL") {
   const cleanCode = code.toUpperCase().trim();
@@ -296,6 +340,147 @@ export async function validateVoucher(code: string, subtotal: number, scope: "TO
   };
 }
 
+export async function getVouchers() {
+  try {
+    const list = await db.select().from(schema.vouchers).orderBy(schema.vouchers.createdAt);
+    if (list.length > 0) {
+      return list.map((v) => ({
+        id: v.id,
+        code: v.code,
+        type: v.type as "PERCENT" | "FIXED",
+        value: Number(v.value),
+        maxDiscount: v.maxDiscount ? Number(v.maxDiscount) : undefined,
+        minSpend: Number(v.minSpend),
+        quotaTotal: v.quotaTotal,
+        quotaUsed: v.quotaUsed,
+        scope: v.scope as "ALL" | "TOPUP" | "JOKI",
+        validFrom: v.validFrom ? new Date(v.validFrom).toISOString() : new Date().toISOString(),
+        validUntil: v.validUntil ? new Date(v.validUntil).toISOString() : new Date().toISOString(),
+        isActive: v.isActive,
+      }));
+    }
+  } catch {}
+  return DUMMY_VOUCHERS;
+}
+
+export async function createVoucher(data: {
+  code: string;
+  type: "PERCENT" | "FIXED";
+  value: number;
+  maxDiscount?: number;
+  minSpend?: number;
+  quotaTotal?: number;
+  scope?: "ALL" | "TOPUP" | "JOKI";
+  validFrom?: Date;
+  validUntil?: Date;
+  isActive?: boolean;
+}) {
+  const user = await requireRole(["admin", "super_admin"]);
+  const cleanCode = data.code.toUpperCase().trim();
+
+  const [created] = await db
+    .insert(schema.vouchers)
+    .values({
+      code: cleanCode,
+      type: data.type,
+      value: data.value.toFixed(2),
+      maxDiscount: data.maxDiscount !== undefined ? data.maxDiscount.toFixed(2) : undefined,
+      minSpend: data.minSpend !== undefined ? data.minSpend.toFixed(2) : "0",
+      quotaTotal: data.quotaTotal ?? 500,
+      quotaUsed: 0,
+      scope: data.scope ?? "ALL",
+      validFrom: data.validFrom || new Date(),
+      validUntil: data.validUntil || new Date(Date.now() + 30 * 86400000),
+      isActive: data.isActive ?? true,
+    })
+    .returning();
+
+  await writeAuditLog({
+    actorId: user.userId,
+    actorRole: user.role,
+    action: "CREATE",
+    entityType: "voucher",
+    entityId: created?.id,
+    referenceCode: cleanCode,
+    afterData: data,
+  });
+
+  revalidatePath("/admin/vouchers");
+  return { success: true, voucher: created };
+}
+
+export async function updateVoucher(
+  id: string,
+  data: Partial<{
+    code: string;
+    type: "PERCENT" | "FIXED";
+    value: number;
+    maxDiscount?: number;
+    minSpend?: number;
+    quotaTotal?: number;
+    scope?: "ALL" | "TOPUP" | "JOKI";
+    validFrom?: Date;
+    validUntil?: Date;
+    isActive?: boolean;
+  }>
+) {
+  const user = await requireRole(["admin", "super_admin"]);
+
+  const [before] = await db.select().from(schema.vouchers).where(eq(schema.vouchers.id, id)).limit(1);
+
+  const [updated] = await db
+    .update(schema.vouchers)
+    .set({
+      code: data.code !== undefined ? data.code.toUpperCase().trim() : undefined,
+      type: data.type,
+      value: data.value !== undefined ? data.value.toFixed(2) : undefined,
+      maxDiscount: data.maxDiscount !== undefined ? (data.maxDiscount ? data.maxDiscount.toFixed(2) : null) : undefined,
+      minSpend: data.minSpend !== undefined ? data.minSpend.toFixed(2) : undefined,
+      quotaTotal: data.quotaTotal,
+      scope: data.scope,
+      validFrom: data.validFrom,
+      validUntil: data.validUntil,
+      isActive: data.isActive,
+    })
+    .where(eq(schema.vouchers.id, id))
+    .returning();
+
+  await writeAuditLog({
+    actorId: user.userId,
+    actorRole: user.role,
+    action: "UPDATE",
+    entityType: "voucher",
+    entityId: id,
+    referenceCode: updated?.code || id,
+    beforeData: before || null,
+    afterData: updated || data,
+  });
+
+  revalidatePath("/admin/vouchers");
+  return { success: true, voucher: updated };
+}
+
+export async function deleteVoucher(id: string) {
+  const user = await requireRole(["admin", "super_admin"]);
+
+  const [before] = await db.select().from(schema.vouchers).where(eq(schema.vouchers.id, id)).limit(1);
+
+  await db.delete(schema.vouchers).where(eq(schema.vouchers.id, id));
+
+  await writeAuditLog({
+    actorId: user.userId,
+    actorRole: user.role,
+    action: "DELETE",
+    entityType: "voucher",
+    entityId: id,
+    referenceCode: before?.code || id,
+    beforeData: before || null,
+  });
+
+  revalidatePath("/admin/vouchers");
+  return { success: true };
+}
+
 // ============ SUPPLIERS ACTIONS ============
 export async function createSupplier(data: { name: string; baseUrl: string; apiKey: string }) {
   const user = await requireRole(["admin", "super_admin"]);
@@ -323,3 +508,39 @@ export async function createSupplier(data: { name: string; baseUrl: string; apiK
   revalidatePath("/admin/suppliers");
   return { success: true, supplier: created };
 }
+
+export async function getSuppliers() {
+  try {
+    const list = await db.select().from(schema.suppliers).orderBy(schema.suppliers.createdAt);
+    if (list.length > 0) {
+      return list.map((s) => ({
+        id: s.id,
+        name: s.name,
+        baseUrl: s.baseUrl,
+        apiKeyMasked: "••••••••••••" + (s.id ? s.id.slice(-4) : "key"),
+        isActive: s.isActive,
+        lastSync: s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleDateString("id-ID") : "Belum pernah",
+        balance: 0,
+        status: s.isActive ? "TERKONEKSI" : "STANDBY",
+      }));
+    }
+  } catch {}
+  return [];
+}
+
+export async function deleteSupplier(id: string) {
+  const user = await requireRole(["admin", "super_admin"]);
+  const [before] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id)).limit(1);
+  await db.delete(schema.suppliers).where(eq(schema.suppliers.id, id));
+  await writeAuditLog({
+    actorId: user.userId,
+    actorRole: user.role,
+    action: "DELETE",
+    entityType: "supplier",
+    entityId: id,
+    referenceCode: before?.name || id,
+  });
+  revalidatePath("/admin/suppliers");
+  return { success: true };
+}
+

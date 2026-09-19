@@ -13,7 +13,7 @@ export function getDb() {
   if (!pool) {
     pool = new Pool({ connectionString });
     // Catch connection errors on idle pool clients gracefully to prevent crashing
-    pool.on("error", (err) => {
+    pool.on("error", (err: unknown) => {
       // Non-fatal background pool error handled
     });
   }

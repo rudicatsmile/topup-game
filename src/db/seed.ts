@@ -227,3 +227,15 @@ export async function seed() {
 
   console.log("✅ Database seeded successfully!");
 }
+
+if (process.argv[1]?.includes("seed")) {
+  seed()
+    .then(() => {
+      console.log("Seeding finished.");
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error("Seeding error:", err);
+      process.exit(1);
+    });
+}
